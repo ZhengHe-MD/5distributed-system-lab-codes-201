@@ -1,6 +1,8 @@
 package viewservice
 
-import "testing"
+import (
+	"testing"
+)
 import "runtime"
 import "time"
 import "fmt"

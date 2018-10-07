@@ -18,6 +18,11 @@ type ViewServer struct {
 
 
 	// Your declarations here.
+	pings    map[string]time.Time
+	currView View
+	nextView View
+	lastAck  uint
+	idles    []string
 }
 
 //
@@ -26,8 +31,102 @@ type ViewServer struct {
 func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 
 	// Your code here.
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	// debug
+	// record ping
+	vs.pings[args.Me] = time.Now()
+
+	if vs.currView.Viewnum == 0 {
+		vs.currView.Primary = args.Me
+		vs.currView.Viewnum = 1
+		vs.lastAck = 0
+		// NOTE: assignment is a copy
+		vs.nextView = vs.currView
+		vs.logState()
+	} else {
+		switch args.Me {
+		case vs.currView.Primary:
+			if args.Viewnum == 0 {
+				vs.currView = View{
+					Viewnum: vs.currView.Viewnum + 1,
+					Primary: vs.currView.Backup,
+					Backup:  "",
+				}
+
+				vs.idles = append(vs.idles, args.Me)
+
+				if len(vs.idles) > 0 {
+					vs.currView.Backup, vs.idles = vs.idles[0], vs.idles[1:]
+				}
+
+				vs.nextView = vs.currView
+				vs.logState()
+			}
+
+			if args.Viewnum == vs.currView.Viewnum {
+				vs.lastAck = args.Viewnum
+				if vs.currView != vs.nextView {
+					if vs.nextView.Backup == "" && len(vs.idles) > 0 {
+						vs.nextView.Backup, vs.idles = vs.idles[0], vs.idles[1:]
+					}
+					vs.currView = vs.nextView
+				}
+				vs.logState()
+			}
+		case vs.currView.Backup:
+			// do nothing
+		default:
+			if vs.currView.Backup == "" {
+				if vs.lastAck == vs.currView.Viewnum {
+					vs.currView.Backup = args.Me
+					vs.currView.Viewnum += 1
+					vs.nextView = vs.currView
+					vs.logState()
+				} else {
+					vs.nextView.Backup = args.Me
+					vs.nextView.Viewnum += 1
+				}
+			} else {
+				vs.addIdle(args.Me)
+				vs.logState()
+			}
+		}
+	}
+
+	reply.View = vs.currView
 
 	return nil
+}
+
+//
+// log viewserver state
+//
+func (vs *ViewServer) logState() {
+	log.Println(vs.lastAck, vs.currView, vs.idles)
+}
+
+//
+// safe add idle server
+//
+func (vs *ViewServer) addIdle(name string) {
+	if !vs.hasIdle(name) {
+		vs.idles = append(vs.idles, name)
+	}
+}
+
+//
+// check the new server is in idle
+//
+func (vs *ViewServer) hasIdle(name string) bool {
+	res := false
+	for _, idle := range vs.idles {
+		if idle == name {
+			res = true
+			break
+		}
+	}
+	return res
 }
 
 //
@@ -36,6 +135,7 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
 
 	// Your code here.
+	reply.View = vs.currView
 
 	return nil
 }
@@ -47,8 +147,48 @@ func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
 // accordingly.
 //
 func (vs *ViewServer) tick() {
-
+	// TODO: promote the backup if the viewservice has missed
+	// DeadPings pings from the primary
 	// Your code here.
+
+	// check primary dies
+	primaryLastPing, ok1 := vs.pings[vs.currView.Primary]
+	backupLastPing, ok2 := vs.pings[vs.currView.Backup]
+
+	if ok1 {
+		if time.Now().Sub(primaryLastPing) > DeadPings * PingInterval {
+			newView := View{
+				Viewnum: vs.currView.Viewnum + 1,
+				Primary: vs.currView.Backup,
+				Backup:  "",
+			}
+
+			if vs.lastAck == vs.currView.Viewnum {
+				vs.currView = newView
+				if len(vs.idles) > 0 {
+					vs.currView.Backup, vs.idles = vs.idles[0], vs.idles[1:]
+				}
+				vs.nextView = vs.currView
+				vs.logState()
+			} else {
+				vs.nextView = newView
+				// TODO: deal with idles
+			}
+		}
+	}
+
+	if ok2 {
+		if time.Now().Sub(backupLastPing) > DeadPings * PingInterval {
+			if len(vs.idles) > 0 {
+				vs.currView.Backup, vs.idles = vs.idles[0], vs.idles[1:]
+			} else {
+				vs.currView.Backup = ""
+			}
+			vs.currView.Viewnum += 1
+			vs.nextView = vs.currView
+			vs.logState()
+		}
+	}
 }
 
 //
@@ -77,6 +217,7 @@ func StartServer(me string) *ViewServer {
 	vs := new(ViewServer)
 	vs.me = me
 	// Your vs.* initializations here.
+	vs.pings = make(map[string]time.Time)
 
 	// tell net/rpc about our RPC server and handlers.
 	rpcs := rpc.NewServer()
