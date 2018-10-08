@@ -77,7 +77,7 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 		case vs.currView.Backup:
 			// do nothing
 		default:
-			if vs.currView.Backup == "" {
+			if vs.currView.Backup == "" && vs.currView.Primary != ""{
 				if vs.lastAck == vs.currView.Viewnum {
 					vs.currView.Backup = args.Me
 					vs.currView.Viewnum += 1
@@ -103,7 +103,7 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 // log viewserver state
 //
 func (vs *ViewServer) logState() {
-	log.Println(vs.lastAck, vs.currView, vs.idles)
+	log.Printf("[viewservice]: %v %v %v\n", vs.lastAck, vs.currView, vs.idles)
 }
 
 //
