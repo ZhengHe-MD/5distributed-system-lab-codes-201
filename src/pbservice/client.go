@@ -1,5 +1,9 @@
 package pbservice
 
+import (
+	"log"
+)
+import "time"
 import "viewservice"
 import "net/rpc"
 import "fmt"
@@ -11,6 +15,8 @@ import "math/big"
 type Clerk struct {
 	vs *viewservice.Clerk
 	// Your declarations here
+	psrv	string
+	bsrv  	string
 }
 
 // this may come in handy.
@@ -25,8 +31,27 @@ func MakeClerk(vshost string, me string) *Clerk {
 	ck := new(Clerk)
 	ck.vs = viewservice.MakeClerk(me, vshost)
 	// Your ck.* initializations here
+	ck.updateEndpoints()
+	log.Println(ck)
 
 	return ck
+}
+
+func (ck *Clerk) updateEndpoints() {
+	view, ok := ck.vs.Get()
+
+	if ok {
+		ck.psrv = view.Primary
+		ck.bsrv = view.Backup
+	} else {
+		log.Printf("Clerk %v get service view failed, the whole service maybe down\n", ck)
+	}
+}
+
+func (ck *Clerk) makeSureEndpointExist(endpoint string) {
+	if endpoint == "" {
+		ck.updateEndpoints()
+	}
 }
 
 
@@ -65,6 +90,46 @@ func call(srv string, rpcname string,
 }
 
 //
+// get srv string by endpoint name defined in pbservice/common.go
+//
+func (ck *Clerk) getSrv(endpoint string) string {
+	switch endpoint {
+	case Primary:
+		ck.makeSureEndpointExist(ck.psrv)
+		return ck.psrv
+	case Backup:
+		ck.makeSureEndpointExist(ck.bsrv)
+		return ck.bsrv
+	default:
+		log.Fatalf("wrong endpoint name %v\n", endpoint)
+		return ""
+	}
+}
+
+func (ck *Clerk) GeneralGet(endpoint string, key string) string {
+	args := GetArgs{ Key: key }
+	reply := GetReply{}
+
+	for {
+		ok := call(ck.getSrv(endpoint), "PBServer.Get", args, &reply)
+
+		if !ok {
+			ck.updateEndpoints()
+		}
+
+		if ok && reply.Err == ErrNoKey {
+			return ""
+		}
+
+		if ok && reply.Err == "" {
+			return reply.Value
+		}
+
+		time.Sleep(viewservice.PingInterval)
+	}
+}
+
+//
 // fetch a key's value from the current primary;
 // if they key has never been set, return "".
 // Get() must keep trying until it either the
@@ -74,16 +139,47 @@ func call(srv string, rpcname string,
 func (ck *Clerk) Get(key string) string {
 
 	// Your code here.
-
-	return "???"
+	return ck.GeneralGet(Primary, key)
 }
 
 //
-// send a Put or Append RPC
+// takes a server name, send a Put or Append RPC
+//
+func (ck *Clerk) GeneralPutAppend(endpoint string, key string, value string, op string) {
+	args := PutAppendArgs{
+		Key:   key,
+		Value: value,
+		Op:    op,
+		Id:    nrand(),
+		No:    0,  // doesn't matter
+		Isfp:  false,
+	}
+	reply := PutAppendReply{}
+
+	for {
+		ok := call(ck.getSrv(endpoint), "PBServer.PutAppend", args, &reply)
+
+		// TODO: 让 BackupPut 和 Append 使用单独的 GeneralPutAppend
+		// 如果是 Backup PutAppend 请求，发现 Backup 发生变化则应该停止请求
+		if !ok {
+			ck.updateEndpoints()
+		}
+
+		if ok {
+			break
+		}
+
+		time.Sleep(viewservice.PingInterval)
+	}
+}
+
+//
+// send a Put or Append RPC to primary server
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 	// Your code here.
+	ck.GeneralPutAppend(Primary, key, value, op)
 }
 
 //
@@ -100,4 +196,62 @@ func (ck *Clerk) Put(key string, value string) {
 //
 func (ck *Clerk) Append(key string, value string) {
 	ck.PutAppend(key, value, "Append")
+}
+
+func (ck *Clerk) GeneralBackupPutAppend(endpoint string, key string, value string, op string, no uint, id int64) {
+	args := PutAppendArgs{
+		Key:   key,
+		Value: value,
+		Op:    op,
+		Id:    id,
+		No:    no,
+		Isfp:  true,
+	}
+	reply := PutAppendReply{}
+
+	for {
+		ok := call(ck.getSrv(endpoint), "PBServer.PutAppend", args, &reply)
+
+		// TODO: 让 BackupPut 和 Append 使用单独的 GeneralPutAppend
+		// 如果是 Backup PutAppend 请求，发现 Backup 发生变化则应该停止请求
+		if !ok {
+			ck.updateEndpoints()
+		}
+
+		if ok {
+			break
+		}
+
+		time.Sleep(viewservice.PingInterval)
+	}
+}
+
+//
+//
+//
+func (ck *Clerk) BackupPutAppend(key string, value string, op string, no uint, id int64) {
+	ck.GeneralBackupPutAppend(Backup, key, value, op, no, id)
+}
+
+//
+// tell the backup to update key's value
+// must keep trying until it succeeds
+//
+func (ck *Clerk) BackupPut(key string, value string, no uint, id int64) {
+	ck.BackupPutAppend(key, value, "Put", no, id)
+}
+
+//
+// tell the backup to append to key's value
+// must keep trying until it succeeds
+//
+func (ck *Clerk) BackupAppend(key string, value string, no uint, id int64) {
+	ck.BackupPutAppend(key, value, "Append", no, id)
+}
+
+//
+// get kvs data from primary
+//
+func (ck *Clerk) GetDB(args GetDBArgs, reply *GetDBReply) bool {
+	return call(ck.getSrv(Primary), "PBServer.GetDB", args, reply)
 }
