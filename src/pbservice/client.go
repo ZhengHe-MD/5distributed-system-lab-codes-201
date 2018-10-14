@@ -32,7 +32,6 @@ func MakeClerk(vshost string, me string) *Clerk {
 	ck.vs = viewservice.MakeClerk(me, vshost)
 	// Your ck.* initializations here
 	ck.updateEndpoints()
-	log.Println(ck)
 
 	return ck
 }
@@ -44,7 +43,7 @@ func (ck *Clerk) updateEndpoints() {
 		ck.psrv = view.Primary
 		ck.bsrv = view.Backup
 	} else {
-		log.Printf("Clerk %v get service view failed, the whole service maybe down\n", ck)
+		//log.Printf("Clerk %v get service view failed, the whole service maybe down\n", ck)
 	}
 }
 
@@ -107,22 +106,25 @@ func (ck *Clerk) getSrv(endpoint string) string {
 }
 
 func (ck *Clerk) GeneralGet(endpoint string, key string) string {
-	args := GetArgs{ Key: key }
-	reply := GetReply{}
+	args := GetArgs{
+		Key: key,
+	}
 
 	for {
+		reply := GetReply{}
 		ok := call(ck.getSrv(endpoint), "PBServer.Get", args, &reply)
 
 		if !ok {
 			ck.updateEndpoints()
-		}
-
-		if ok && reply.Err == ErrNoKey {
-			return ""
-		}
-
-		if ok && reply.Err == "" {
-			return reply.Value
+		} else {
+			switch reply.Err {
+			case ErrNoKey:
+				return ""
+			case ErrWrongView:
+				ck.updateEndpoints()
+			case "":
+				return reply.Value
+			}
 		}
 
 		time.Sleep(viewservice.PingInterval)
@@ -141,6 +143,8 @@ func (ck *Clerk) Get(key string) string {
 	// Your code here.
 	return ck.GeneralGet(Primary, key)
 }
+
+
 
 //
 // takes a server name, send a Put or Append RPC
@@ -254,4 +258,8 @@ func (ck *Clerk) BackupAppend(key string, value string, no uint, id int64) {
 //
 func (ck *Clerk) GetDB(args GetDBArgs, reply *GetDBReply) bool {
 	return call(ck.getSrv(Primary), "PBServer.GetDB", args, reply)
+}
+
+func (ck *Clerk) BackupGet(args GetArgs, reply *GetReply, srv string) bool {
+	return call(srv, "PBServer.Get", args, &reply)
 }

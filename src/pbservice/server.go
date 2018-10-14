@@ -43,15 +43,55 @@ type PBServer struct {
 func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 	// Your code here.
 	pb.mu.Lock()
+	defer pb.mu.Unlock()
+
+	if !pb.isp && !pb.isb {
+		reply.Err = ErrIdle
+		reply.Value = ""
+		return nil
+	}
+
+	if pb.isb && !pb.bready {
+		reply.Err = ErrBackupNotReady
+		reply.Value = ""
+		return nil
+	}
+
+	if pb.isp {
+		// NOTE: if this pb server thought it should be the Primary
+		// but not in reality, this pb server should reject the request
+		if args.Isfp && args.Viewnum != pb.view.Viewnum {
+			reply.Err = ErrWrongView
+			reply.Value = ""
+			return nil
+		}
+
+		if pb.view.Backup != "" {
+			bargs := GetArgs{ Key: args.Key, Isfp: true, Viewnum: pb.view.Viewnum }
+			breply := GetReply{}
+			ok := pb.backupck.BackupGet(bargs, &breply, pb.view.Backup)
+
+			if ok {
+				if breply.Err == ErrWrongView {
+					reply.Err = ErrWrongView
+					reply.Value = ""
+					return nil
+				}
+			} else {
+				reply.Err = ErrLostBackup
+				reply.Value = ""
+				return nil
+			}
+		}
+	}
+
 	v, ok := pb.kvs[args.Key]
-	pb.mu.Unlock()
 
 	if !ok {
 		reply.Err = ErrNoKey
 	}
 
 	reply.Value = v
-
 	return nil
 }
 
@@ -63,6 +103,11 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 	// backup is not initialized, discard all requests
 	if pb.isb && !pb.bready {
 		pb.opscachemap[args.No] = *args
+		return nil
+	}
+
+	if pb.isp && args.Isfp {
+		reply.Err = ErrWrongServer
 		return nil
 	}
 
@@ -130,7 +175,6 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 
 	// log to history
 	pb.history[id] = struct{}{}
-	// pb.logPBState()
 
 	return nil
 }
@@ -180,11 +224,6 @@ func (pb *PBServer) GetDB(args *GetDBArgs, reply *GetDBReply) error {
 	return nil
 }
 
-func (pb *PBServer) logPBState() {
-	log.Printf("[%v]: %v", pb.me, pb.kvs)
-}
-
-
 //
 // ping the viewserver periodically.
 // if view changed:
@@ -194,13 +233,9 @@ func (pb *PBServer) logPBState() {
 func (pb *PBServer) tick() {
 	// Your code here.
 	view, err := pb.vs.Ping(pb.view.Viewnum)
-	// NOTE: viewservice failed, we don't care about it in this lab
+	// NOTE: viewservice failed
+	// we keep the previous view
 	if err != nil {
-		pb.view = viewservice.View{
-			Viewnum: 0,
-			Primary: "",
-			Backup:  "",
-		}
 		return
 	}
 

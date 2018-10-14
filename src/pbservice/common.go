@@ -6,8 +6,11 @@ const (
 	OK             = "OK"
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongServer = "ErrWrongServer"
-	ErrServerInit  = "ErrServerInit"
-	ErrNotReady    = "ErrNotReady"
+	ErrWrongView   = "ErrWrongView"
+	ErrBackupNotReady = "ErrBackupNotReady"
+	ErrIdle  	   = "ErrIdle"
+	ErrCacheNotFlushed = "ErrCacheNotFlushed"
+	ErrLostBackup  = "ErrLostBackup"
 	Primary 	   = "Primary"
 	Backup 		   = "Backup"
 	Put 		   = "Put"
@@ -28,7 +31,6 @@ type PutAppendArgs struct {
 	Id    int64
 	No    uint
 	Isfp  bool 		// is from primary, otherwise is targeted at primary
-	Time time.Time
 }
 
 type PutAppendReply struct {
@@ -38,6 +40,8 @@ type PutAppendReply struct {
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
+	Isfp bool
+	Viewnum uint
 }
 
 type GetReply struct {
